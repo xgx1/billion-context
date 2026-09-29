@@ -71,7 +71,11 @@ export function witnessHash(name: string, args: unknown): string {
     } else if (args !== null && args !== undefined) {
         canonicalArgs = stableStringify(args);
     }
-    const obj = JSON.parse(canonicalArgs) as Record<string, unknown>;
+    // Non-object argument JSON (a null/scalar from a misbehaving upstream) has
+    // no keys to route by — reject instead of throwing inside the stream path.
+    const parsed = JSON.parse(canonicalArgs);
+    if (parsed === null || typeof parsed !== "object") return "";
+    const obj = parsed as Record<string, unknown>;
     if ("conversation_id" in obj) {
         delete obj.conversation_id;
         canonicalArgs = stableStringify(obj);

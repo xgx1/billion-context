@@ -79,6 +79,14 @@ describe("#1685 tool-ring unit", () => {
         assert.equal(witnessHash("compress", "{not json"), "");
     });
 
+    it("non-object argument JSON (null/scalar) never records and never throws", () => {
+        for (const weird of ["null", "42", '"str"', "true"]) {
+            assert.doesNotThrow(() => recordToolWitness("s1", "compress", weird));
+            assert.equal(witnessHash("compress", weird), "");
+        }
+        assert.equal(_toolRingSizeForTest(), 0);
+    });
+
     it("capacity eviction drops the oldest hash from the index too", () => {
         const first = JSON.stringify({ n: 0 });
         recordToolWitness("s1", "compress", first);
