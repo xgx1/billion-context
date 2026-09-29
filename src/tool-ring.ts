@@ -35,6 +35,13 @@ const rings = new Map<string, WitnessEntry[]>();
 /** witness hash → set of sessionIds holding it (populated on lookup sweep). */
 const hashIndex = new Map<string, Set<string>>();
 
+/** Fake-clock seam for TTL tests. Undefined = real wall clock. */
+let clockForTest: (() => number) | undefined;
+
+function nowMs(): number {
+    return clockForTest ? clockForTest() : Date.now();
+}
+
 function sha256(text: string): string {
     return createHash("sha256").update(text, "utf8").digest("hex");
 }
@@ -79,13 +86,23 @@ function dropFromIndex(hash: string, sessionId: string): void {
     if (sessions.size === 0) hashIndex.delete(hash);
 }
 
+/** Drop index membership ONLY when no surviving ring slot still carries this
+ *  hash. A duplicate hash inside the window (same name+args witnessed twice —
+ *  e.g. a retried compress) must not lose its index when its OLDER copy is
+ *  evicted or swept; that would silently demote the witness to a miss.
+ *  O(capacity) per eviction — negligible at 32. */
+function dropFromIndexIfAbsent(ring: WitnessEntry[], hash: string, sessionId: string): void {
+    if (ring.some((e) => e.hash === hash)) return;
+    dropFromIndex(hash, sessionId);
+}
+
 function sweep(sessionId: string, now: number): void {
     const ring = rings.get(sessionId);
     if (!ring) return;
     while (ring.length > 0 && now - ring[0].at > WITNESS_TTL_MS) {
         const dead = ring.shift();
         if (!dead) break;
-        dropFromIndex(dead.hash, sessionId);
+        dropFromIndexIfAbsent(ring, dead.hash, sessionId);
     }
     if (ring.length === 0) rings.delete(sessionId);
 }
@@ -97,7 +114,7 @@ export function recordToolWitness(sessionId: string, name: string, args: string 
     if (name.length === 0) return;
     const hash = witnessHash(name, args);
     if (!hash) return;
-    const now = Date.now();
+    const now = nowMs();
     sweep(sessionId, now);
     const ring = rings.get(sessionId) ?? [];
     if (ring.length > 0 && ring[ring.length - 1].hash === hash) {
@@ -105,12 +122,12 @@ export function recordToolWitness(sessionId: string, name: string, args: string 
     } else {
         ring.push({ hash, at: now });
         // capacity eviction must drop the index entry too, or hashIndex keeps
-        // every over-capacity hash forever (unbounded growth + stale hits).
+        // every over-capacity hash forever (unbounded growth + stale hits) —
+        // but only when no surviving slot still carries the hash (duplicates).
         while (ring.length > RING_CAPACITY) {
             const evicted = ring.shift();
             if (!evicted) break;
-            if (evicted.hash === hash) continue;
-            dropFromIndex(evicted.hash, sessionId);
+            dropFromIndexIfAbsent(ring, evicted.hash, sessionId);
         }
     }
     rings.set(sessionId, ring);
@@ -125,7 +142,7 @@ export function recordToolWitness(sessionId: string, name: string, args: string 
 export function lookupToolWitness(name: string, args: unknown): Set<string> {
     const hash = witnessHash(name, args);
     if (!hash) return new Set();
-    const now = Date.now();
+    const now = nowMs();
     for (const sessionId of [...rings.keys()]) sweep(sessionId, now);
     const sessions = hashIndex.get(hash);
     return sessions ? new Set(sessions) : new Set();
@@ -134,6 +151,12 @@ export function lookupToolWitness(name: string, args: unknown): Set<string> {
 export function resetToolRingForTest(): void {
     rings.clear();
     hashIndex.clear();
+    clockForTest = undefined;
+}
+
+/** #1685 review: TTL is an issue acceptance item — pin it with a fake clock. */
+export function _setToolRingClockForTest(fn: (() => number) | undefined): void {
+    clockForTest = fn;
 }
 
 export function _toolRingSizeForTest(): number {

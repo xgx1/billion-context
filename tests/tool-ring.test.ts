@@ -9,6 +9,7 @@ import { createCore, defaultConfig } from "acp-kernel";
 import { type PluginToolDeps, _resetPluginStateForTest, handlePluginTool, recordPluginSession } from "../src/plugin.ts";
 import { getSession } from "../src/session.ts";
 import {
+    _setToolRingClockForTest,
     _toolRingSizeForTest,
     lookupToolWitness,
     normalizeToolName,
@@ -195,5 +196,68 @@ describe("#1685 handlePluginTool routing ladder", () => {
         const r = await post({ tool: "acp_status", args: {} });
         assert.equal(r.status, 400);
         assert.match(String(r.json.error), /0 conversations active/);
+    });
+});
+
+describe("#1685 review: duplicate-hash index safety + TTL", () => {
+    beforeEach(() => {
+        resetToolRingForTest();
+    });
+
+    it("empty-name witness is a no-op (never recorded)", () => {
+        recordToolWitness("s-nameless", "", '{"a":1}');
+        assert.equal(_toolRingSizeForTest(), 0);
+        assert.equal(lookupToolWitness("", '{"a":1}').size, 0);
+    });
+
+    it("evicting the older copy of a duplicated hash keeps the index (capacity path)", () => {
+        // ring fills [X, d0..d30] = 32; recording X again pushes to 33 and
+        // evicts the HEAD X — the surviving tail X must keep its index entry.
+        const X = { summary: "dup-hash x" };
+        recordToolWitness("s-dup", "compress", X);
+        for (let i = 0; i < 31; i++) recordToolWitness("s-dup", "compress", { i });
+        recordToolWitness("s-dup", "compress", X);
+        assert.deepEqual([...lookupToolWitness("compress", X)], ["s-dup"], "surviving duplicate copy still matches");
+    });
+
+    it("sweeping the older copy of a duplicated hash keeps the index (TTL path)", () => {
+        const t0 = 1_700_000_000_000;
+        const X = { summary: "dup-hash sweep" };
+        const Y = { summary: "between" };
+        const TTL = 10 * 60 * 1000;
+        _setToolRingClockForTest(() => t0);
+        recordToolWitness("s-sweep", "compress", X);
+        _setToolRingClockForTest(() => t0 + 1000);
+        recordToolWitness("s-sweep", "compress", Y);
+        _setToolRingClockForTest(() => t0 + 2000);
+        recordToolWitness("s-sweep", "compress", X); // ring [X, Y, X]
+        // head X and Y are past TTL; tail X (age TTL-500) must survive AND match
+        _setToolRingClockForTest(() => t0 + TTL + 1500);
+        assert.deepEqual([...lookupToolWitness("compress", X)], ["s-sweep"]);
+        _setToolRingClockForTest(undefined);
+    });
+
+    it("TTL expiry: witness stops matching past 10 minutes, matches AT the boundary", () => {
+        const t0 = 1_700_000_000_000;
+        const args = { summary: "ttl witness" };
+        const TTL = 10 * 60 * 1000;
+        _setToolRingClockForTest(() => t0);
+        recordToolWitness("s-ttl", "compress", args);
+        assert.equal(lookupToolWitness("compress", args).size, 1, "fresh witness matches");
+        _setToolRingClockForTest(() => t0 + TTL);
+        assert.equal(lookupToolWitness("compress", args).size, 1, "exactly at TTL still matches (strict >)");
+        _setToolRingClockForTest(() => t0 + TTL + 1);
+        assert.equal(lookupToolWitness("compress", args).size, 0, "one ms past TTL is a miss");
+        _setToolRingClockForTest(undefined);
+    });
+
+    it("TTL expiry frees the ring (empty ring is dropped from the map)", () => {
+        const t0 = 1_700_000_000_000;
+        _setToolRingClockForTest(() => t0);
+        recordToolWitness("s-gone", "compress", { summary: "gone" });
+        _setToolRingClockForTest(() => t0 + 10 * 60 * 1000 + 1);
+        lookupToolWitness("compress", { summary: "gone" });
+        assert.equal(_toolRingSizeForTest(), 0);
+        _setToolRingClockForTest(undefined);
     });
 });

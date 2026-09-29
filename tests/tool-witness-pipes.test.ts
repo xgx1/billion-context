@@ -130,6 +130,19 @@ test("json pipe: non-stream tool_calls land in the witness ring", async () => {
     assert.deepEqual([...lookupToolWitness("compress", COMPRESS_ARGS)], ["w-json"]);
 });
 
+test("nameless tool call never becomes a witness (#1484 class)", async () => {
+    resetToolRingForTest();
+    const events = [
+        chatChunk({ role: "assistant" }),
+        chatChunk({ tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "", arguments: COMPRESS_ARGS } }] }),
+        chatChunk({}, { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }),
+        DONE,
+    ];
+    await pipePluginChatWithStrip(streamOf(events), makeRes([]), "openai", makeSession("w-noname"));
+    assert.equal(lookupToolWitness("compress", COMPRESS_ARGS).size, 0);
+    assert.equal(lookupToolWitness("", COMPRESS_ARGS).size, 0);
+});
+
 test("witness survives a legacy conversation_id echo in the args (#760 parity)", async () => {
     resetToolRingForTest();
     const withEcho = `{"conversation_id":"pfa-stale","startId":"m00001","endId":"m00009","summary":"witness lane test"}`;
