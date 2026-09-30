@@ -35,10 +35,12 @@ test("exportSnapshot/importSnapshot roundtrip preserves resolution", () => {
     assert.equal(replay.sessionId, first.sessionId, "rehydrated chain still resolves to the same session");
 });
 
-test("importSnapshot drops malformed and expired entries", () => {
+test("importSnapshot drops malformed entries; aged chains stay permanent (#1724)", () => {
     const r = new PrefixAffinityResolver();
     assert.equal(r.importSnapshot("nope"), 0);
-    assert.equal(r.importSnapshot([{ sessionId: 1 }, { sessionId: "x", depth: "3" }, null, { sessionId: "ok", depth: 3, tailHash: "t", itemHashes: ["h1", "h2"], lastSeen: Date.now() - 8 * 24 * 60 * 60 * 1000 }]), 0, "malformed + expired are skipped");
+    assert.equal(r.importSnapshot([{ sessionId: 1 }, { sessionId: "x", depth: "3" }, null]), 0, "malformed are skipped");
+    // 400 days old — the month/year single-session promise keeps it valid.
+    assert.equal(r.importSnapshot([{ sessionId: "ok", depth: 3, tailHash: "t", itemHashes: ["h1", "h2"], lastSeen: Date.now() - 400 * 24 * 60 * 60 * 1000 }]), 1, "permanent chains import regardless of age");
 });
 
 test("flush writes the snapshot file; hydrate reattaches after a restart", () => {

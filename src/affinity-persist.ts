@@ -9,7 +9,7 @@ import { log } from "./logger.js";
  * pure in-memory (#309), so a proxy restart orphaned every anonymous session:
  * the next replay forked a fresh session with zero compression state and
  * resent the raw history (#351 — 458K tokens, 0% cache). The chains are
- * small (≤256 sessions × ≤128 hashes); persist them to the state dir with a
+ * small (≤1024 sessions × ≤128 hashes); persist them to the state dir with a
  * debounced atomic write and hydrate on boot.
  */
 
