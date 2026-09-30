@@ -11,7 +11,7 @@ import { absorbEnabled, effectiveAbsorbConfig, isProxyToolFor } from "./absorb.j
 import { effectiveRulesEnabled, rulesEnabled } from "./rules-feature.js";
 import { executeProxyTool } from "./loop/core.js";
 import { normalizeSseLineEndings } from "./sse-util.js";
-import { composeStreamFilters, containsBiliInternalText, containsMarkerLineText, containsRenderTagText, containsToolCallXmlFragment, createBiliArtifactFilter, createMarkerLineFilter, createTagEchoFilter, mayStartBiliInternal, mayStartMarkerLine, mayStartRenderTag, stripAcpTags, stripAnthropicText, stripOpenaiChatText, stripResponsesText, type TagEchoFilter } from "./loop/tag-echo-filter.js";
+import { composeStreamFilters, containsBiliInternalText, containsMarkerLineText, containsRenderTagText, containsToolCallXmlFragment, createBiliArtifactFilter, createMarkerLineFilter, createTagEchoFilter, isOrphanMarkupText, mayStartBiliInternal, mayStartMarkerLine, mayStartRenderTag, stripAcpTags, stripAnthropicText, stripOpenaiChatText, stripResponsesText, type TagEchoFilter } from "./loop/tag-echo-filter.js";
 import { log as loggerLog } from "./logger.js";
 import { ccrEnabled, ccrLoopConfig, contentStoreOf, retrieveToolName } from "./store.js";
 import { imageUsageSuffix } from "./image-compress.js";
@@ -1396,7 +1396,9 @@ export async function pipePluginChatWithStrip(
                 proseAcc += tail;
                 if (s.field === "content" || s.field === "text") {
                     visibleTextChars += tail.length;
-                    releasedMarkupChars += tail.length;
+                    // #1760: only a release that still carries orphan markup is
+                    // residue. The marker-line filter releases preserved prose.
+                    if (isOrphanMarkupText(tail)) releasedMarkupChars += tail.length;
                 }
             }
         }
@@ -1574,11 +1576,12 @@ export async function pipePluginChatWithStrip(
                     keptText = true;
                     if (field === "content") {
                         visibleTextChars += clean.length;
-                        // The folded tail is released markup (an unclosed-tag
-                        // interior), counted like flushTails so degenerate-turn
-                        // detection is unchanged (#1546).
+                        // The folded tail is residue only when it still carries
+                        // orphan markup (an unclosed tag head), counted like
+                        // flushTails so degenerate-turn detection is unchanged
+                        // (#1546, #1760).
                         const tailLen = clean.length - released.length;
-                        if (tailLen > 0) releasedMarkupChars += tailLen;
+                        if (tailLen > 0 && isOrphanMarkupText(clean.slice(released.length))) releasedMarkupChars += tailLen;
                         // What a dropped tag leaves behind is its own interior: the
                         // host finds no tool call in it and stalls the turn.
                         if (droppedTagInFrame) {
@@ -1760,10 +1763,10 @@ export async function pipePluginChatWithStrip(
                     keptText = true;
                     if (field === "text") {
                         visibleTextChars += clean.length;
-                        // Counted like flushTails so degenerate-turn detection is
-                        // unchanged (#1546).
+                        // Counted like flushTails: residue only when the folded
+                        // tail still carries orphan markup (#1546, #1760).
                         const tailLen = clean.length - released.length;
-                        if (tailLen > 0) releasedMarkupChars += tailLen;
+                        if (tailLen > 0 && isOrphanMarkupText(clean.slice(released.length))) releasedMarkupChars += tailLen;
                     }
                 }
                 if (changed) {

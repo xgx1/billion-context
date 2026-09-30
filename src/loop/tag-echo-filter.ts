@@ -385,6 +385,23 @@ export function mayStartBiliInternal(s: string): boolean {
     return containsBiliInternalText(s) || CHAIN_PARTIAL_TAIL.test(s) || HEAD_PREFIX_TAIL.test(s);
 }
 
+// #1760: does text released from a filter's held span still CARRY markup the
+// host cannot act on? The terminal flush of every streaming filter releases
+// whatever it was holding; the caller cannot tell from the release alone
+// whether that was markup the filter declined to swallow (an unclosed tag head
+// such as "\x3ca", a partial chain head, a forged marker) or ordinary prose it
+// was holding only because a later chunk might have completed a markup head.
+// It matters because the caller treats such a release as residue rather than
+// as usable visible output — the degenerate-turn gate counts it against the
+// turn (#870). The marker-line filter is the case that bites: its own flush
+// resolves a held prefix as "content preservation", and EVERY non-ASCII line
+// start is a legitimate marker-head prefix by design (MARKER_HEAD_PREFIX), so a
+// single-line CJK answer is held whole and released here in full — counting it
+// as markup errored out every such turn. Classify by the bytes instead.
+export function isOrphanMarkupText(s: string): boolean {
+    return mayStartRenderTag(s) || containsMarkerLineText(s) || mayStartBiliInternal(s);
+}
+
 function tailHoldLen(s: string): number {
     const m = CHAIN_PARTIAL_TAIL.exec(s);
     const h = HEAD_PREFIX_TAIL.exec(s);

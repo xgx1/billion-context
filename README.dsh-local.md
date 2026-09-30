@@ -40,3 +40,18 @@
 **改了什么**：`src/agent/dsh-native.ts` 的 spawn 调用改为 `lane: dshLane(process.env)`，读 `BILI_NATIVE_DSH_LANE`；未设置时仍是历史值 `"dsh"`。两个实例的启动脚本各导出自己的 lane（生产 `dsh-prod`、dev `dsh-dev`），zone 端口按 lane sticky 分配，互不干扰，生命周期各自归各自。
 
 **上游化状态**：未单独提 issue（避免对同一仓库重复发帖）。若上游愿意收，这是一个 3 行改动 + 一条 env 文档，可作为独立 PR。
+
+## 退化误判：单行中文答案被当成「零可见输出」
+
+**为什么**：`mayStartMarkerLine`（`src/loop/tag-echo-filter.ts:193-195`）用 `MARKER_TAIL` 判定「可能是伪造 marker 行的开头」，而该模式匹配**任何以非 ASCII 字符开头的行**（CJK、重音字母、astral 图标）。于是中文回答不走 `src/plugin.ts:1550` 的快速通道，而是进 marker 过滤器；marker 过滤器按设计扣住非 ASCII 行首前缀（`MARKER_HEAD_PREFIX`，`:180`，注释 `:174-179` 说「Holding is cheap and lossless」），其 flush（`:851-865`）明确把扣住的文本当**内容**放行（«Undecidable prefix or plain tail: content preservation»）。但 `#1546`/`2c86f635` 加的终点记账（`src/plugin.ts:1390-1404` 的 `flushTails()`、`src/plugin.ts:1576-1586` 与 `:1761-1770` 的两处终端折叠）把**释放出来的每一个字符都计进 `releasedMarkupChars`**，于是 `visibleTextChars === releasedMarkupChars`，退化门（`src/plugin.ts:1310`、`:1326`）判为空轮 → 重试 → 再判 → `src/plugin.ts:1319` 报 `the turn degenerated again after the continuation nudge`，整轮失败。
+
+**实测（2026-09-30）**：提示「只回一个字：好」，模型 `deepseek-flash` @ low，上游 api.deepseek.com。经 bili 稳定失败；`BILI_NATIVE_DSH=0` 直连返回「好」。本地录制器录到上游**确实发了** `{"delta":{"content":"好"}}`，三次请求（首试、重试、旁路）都带该内容——是插件侧误判，不是上游空回答。**影响面**：所有「整段可见输出被扣住的单行中文回答」（多行回答会在下一字符处释放，故不受影响）；Responses 车道另有 `heldVisibleChars`（`src/plugin.ts:2052`、`:2335`、门 `:2182`），所以同一提示在 sensenova Responses 线正常——只有 chat-completions 线中招。
+
+**改了什么**：
+- `src/loop/tag-echo-filter.ts`（新增导出）：`isOrphanMarkupText(s)` = `mayStartRenderTag(s) || containsMarkerLineText(s) || mayStartBiliInternal(s)`——判定「释放出来的这段文本是否仍携带 host 无法处理的 markup」。`containsMarkerLineText` 只认字面 `[ACP]`、`mayStartRenderTag` 的 `PARTIAL_TAIL` 要求字面 `<`，所以 CJK 散文为 false、`"\x3ca"` 这类被扣的部分 tag 头仍为 true。
+- `src/plugin.ts` 三处记账改为按字节分类：`flushTails()` 与两处终端折叠只在 `isOrphanMarkupText(...)` 为真时把长度计进 `releasedMarkupChars`；`droppedTagInFrame`（#870 的精确机制）原样保留，未闭合 tag 内部文字仍算残渣、仍会重试一次。
+- `tests/fix-1760-cjk-single-line-visible-turn.test.ts`（新增，3 个用例）：分类单元断言；生产形状回归（`calls === 0`、客户端收到「好」、无 stream error、无 `[degenerate-turn]` 日志）；`"\x3ca"` 对照（仍 `calls === 1`）。
+
+**配置形状的映射依据**：无新增 config 键、无新增环境变量——只是把既有的「释放文本算不算残渣」判定做成一个按字节分类的纯函数，属于修 bug，不扩配置面。
+
+**上游化状态**：已提 issue（<https://github.com/ranxianglei/billion-context/issues/1760>），并说明若 owner 想要别的门（例如由 marker 过滤器上报「真正丢弃的 markup 字符数」而不是在 plugin 侧按字节分类）可按 owner 的形状改。
