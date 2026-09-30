@@ -121,6 +121,7 @@ import { dumpRejectedBody } from "./error-dump.js";
 
 import { decodeRequestBody, DecompressedTooLargeError } from "./content-encoding.js";
 import { applyCompatRoles, applyCompatRolesJson, detectRoleRejection, detectSystemPlacementError, resolveCompatRoles, type CompatRoles } from "./compat-roles.js";
+import { applyCompatDropFields, dropCompatFieldsJson, resolveCompatDropFields } from "./compat-drop.js";
 import { applyOutputSteering, applyOutputSteeringJson } from "./output-steering.js";
 import { bodyDumpEnabled, getUnrecognizedPathStats, isModelDiscoveryPath, logDumpFailure, logUnrecognizedPath } from "./server/observability.js";
 import { BILI_HOP_HEADER, anthropicBetaContextWindow, capRegistryWindowByStandard, expandedContextSuffixWindow, LAUNCHER_MODEL_WINDOWS, LAUNCHER_MODEL_MAX_OUTPUTS, launcherContextWindow, launcherMaxOutput, parseLauncherModelWindows, windowSourceLogged } from "./server/context-window.js";
@@ -5262,6 +5263,9 @@ async function forward(
     // loops below (re-sent bodies must carry the same rewrite as the initial
     // forward, or a developer-role 400 would hit mid-stream on retry).
     let compatRoles: CompatRoles | null = null;
+    // compat.dropFields resolved for this request; shared with wireTransform so
+    // re-sent bodies carry the same deletion as the initial forward.
+    let compatDropFields: string[] | null = null;
     let compatProtocol: "openai" | "responses" | null = null;
     const { upstreamUrl, headers, proxyUrl } = buildForwardTarget(req, opts, route, affinity, prepared !== null ? instanceId : undefined);
     // #1093 output-side compression: resolve through the standard three-level
@@ -5295,6 +5299,16 @@ async function forward(
                 if (applied.rewritten > 0) {
                     wireBody = applied.body;
                     log("info", `[${prepared?.session.id ?? "passthrough"}] [compat] rewrote ${applied.rewritten} message role(s) per compat.roles (${Object.entries(roles).map(([f, t]) => `${f}→${t}`).join(",")})`);
+                }
+            }
+            const dropFields = resolveCompatDropFields(opts.routes, upstreamUrl, opts.compat?.dropFields);
+            if (dropFields.length > 0) {
+                compatDropFields = dropFields;
+                const current = typeof wireBody === "string" ? wireBody : wireBody.toString("utf8");
+                const appliedDrops = applyCompatDropFields(current, dropFields);
+                if (appliedDrops.dropped.length > 0) {
+                    wireBody = appliedDrops.body;
+                    log("info", `[${prepared?.session.id ?? "passthrough"}] [compat] dropped ${appliedDrops.dropped.join(",")} per compat.dropFields`);
                 }
             }
         }
@@ -5338,9 +5352,10 @@ async function forward(
     // otherwise a developer-role 400 would hit mid-stream on the first retry.
     // Reads compatRoles at CALL time: a role learned mid-request (retry below)
     // applies to later re-sends within the same request.
-    const wireTransform = compatProtocol || (steerCfg !== null && steerCfg.enabled)
+    const wireTransform = compatProtocol || compatDropFields || (steerCfg !== null && steerCfg.enabled)
         ? (b: Record<string, unknown>): Record<string, unknown> => {
             if (compatProtocol && compatRoles) applyCompatRolesJson(b, compatProtocol, compatRoles);
+            if (compatDropFields) dropCompatFieldsJson(b, compatDropFields);
             if (steerCfg && steerCfg.enabled && steerProtocol) applyOutputSteeringJson(b, steerProtocol, steerCfg);
             return b;
         }
