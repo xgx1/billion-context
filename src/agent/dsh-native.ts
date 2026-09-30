@@ -211,10 +211,20 @@ export function persistClientEvent(msg: string): void {
     }
 }
 
+/** Lane tag for this host's proxy instance. Attach matches on lane, so two dsh
+ *  deployments on one machine (production and a dev worktree) would otherwise
+ *  share a single proxy — and a session-owned proxy dies with whichever host
+ *  spawned it while the other keeps forwarding to it. BILI_NATIVE_DSH_LANE
+ *  separates them; unset keeps the historical "dsh" lane. */
+function dshLane(env: NodeJS.ProcessEnv): string {
+    const raw = env.BILI_NATIVE_DSH_LANE?.trim();
+    return raw !== undefined && raw.length > 0 ? raw : "dsh";
+}
+
 async function bootstrap(): Promise<string | undefined> {
     try {
         const handle = await ensureProxyRunning(
-            { host: LAUNCHER_DEFAULT_HOST, port: 0, passthrough: false, debug: false, lane: "dsh" },
+            { host: LAUNCHER_DEFAULT_HOST, port: 0, passthrough: false, debug: false, lane: dshLane(process.env) },
             { scriptPath: nativeProxyScriptPath() },
         );
         state.origin = handle.origin;

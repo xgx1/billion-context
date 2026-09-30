@@ -32,3 +32,11 @@
 路径不存在时不重序列化（默认路径保持 byte-for-byte），命中时日志打 `[compat] dropped reasoning.summary per compat.dropFields`。
 
 **上游化状态**：已按上游 AGENTS.md 的要求提 issue 请 owner 裁定配置形状（若是具名开关如 `supportsReasoningSummary: false`，按 owner 的形状改）。在上游给出正式形状前，本 fork 保留此实现。
+
+## `BILI_NATIVE_DSH_LANE`：dsh 车道的 lane 可覆盖（多实例隔离）
+
+**为什么**：attach 的兼容判定按 `lane` 匹配（`instanceCompatible`，`src/launcher.ts:2496`），而 dsh 车道的 lane 硬编码为 `"dsh"`（`src/agent/dsh-native.ts`）。同一台机器上跑两个 dsh 部署（生产 `~/.dsh` 与开发 worktree `~/.dsh-dev`）时，后启动的那个会 attach 到先启动那个的代理；而该代理的生命周期绑在拉起它的 dsh 进程上（父进程 watchdog），于是**任何一个实例重启都会把另一个正在用的模型链路一起带走**——且没有回退路径。
+
+**改了什么**：`src/agent/dsh-native.ts` 的 spawn 调用改为 `lane: dshLane(process.env)`，读 `BILI_NATIVE_DSH_LANE`；未设置时仍是历史值 `"dsh"`。两个实例的启动脚本各导出自己的 lane（生产 `dsh-prod`、dev `dsh-dev`），zone 端口按 lane sticky 分配，互不干扰，生命周期各自归各自。
+
+**上游化状态**：未单独提 issue（避免对同一仓库重复发帖）。若上游愿意收，这是一个 3 行改动 + 一条 env 文档，可作为独立 PR。
